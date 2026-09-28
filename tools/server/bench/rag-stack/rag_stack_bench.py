@@ -2,17 +2,19 @@
 """
 RAG-stack measurable gates for llama-server (embed + looped gen + e2e).
 
+
 Subcommands:
-  embed       - Gate A/B: embed QPS + optional cosine vs --ref
+  embed       - Gate A/B: embed QPS, latency percentiles, optional cosine vs --ref
   loop-depth  - Gate C: require GGUF num_loops / loop_count
-  gen-perf    - Gate D: llama-bench arms (baseline / FA / FA+q8 KV)
+  gen-perf    - Gate D: llama-bench FA / FA+q8 KV on CPU and/or GPU
   e2e         - Gate F: toy corpus hit@k + optional chat latency
   sparse      - Gate E: FlagEmbedding sparse Spearman (optional)
 
 Examples:
-  python rag_stack_bench.py embed --url http://127.0.0.1:8080 --out embed.json
+  python rag_stack_bench.py embed --url http://127.0.0.1:8080 --concurrency 4 --out embed.json
   python rag_stack_bench.py loop-depth -m /path/model.gguf --require
-  python rag_stack_bench.py gen-perf --bin ./build/bin/Release/llama-bench.exe -m /path/nb.gguf
+  python rag_stack_bench.py gen-perf --bin ./llama-bench -m /path/nb.gguf --device both
+  python rag_stack_bench.py gen-perf --bin ./llama-bench -m /path/nb.gguf --device gpu --ngl 99 --vram-probe
   python rag_stack_bench.py e2e --embed-url http://127.0.0.1:8080 --gen-url http://127.0.0.1:8081
   python rag_stack_bench.py sparse --hf BAAI/bge-m3
 """
@@ -22,10 +24,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import statistics
 import struct
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +49,19 @@ def write_json(path: str, obj: Any) -> None:
 def load_json(path: str) -> Any:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def percentile(sorted_vals: list[float], p: float) -> float | None:
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * p
+    f = math.floor(k)
+    c = math.ceil(k)
+    if f == c:
+        return sorted_vals[int(k)]
+    return sorted_vals[f] * (c - k) + sorted_vals[c] * (k - f)
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -72,19 +89,22 @@ def _requests():
     return requests
 
 
-def embed_batch(url: str, texts: list[str], *, normalize: bool = False) -> list[list[float]]:
+def embed_batch(url: str, texts: list[str], *, normalize: bool = False) -> tuple[list[list[float]], float]:
+    """Return (vectors, latency_s)."""
     requests = _requests()
+    t0 = time.perf_counter()
     r = requests.post(
         f"{url.rstrip('/')}/v1/embeddings",
         json={"input": texts, "encoding_format": "float"},
         timeout=600,
     )
+    dt = time.perf_counter() - t0
     r.raise_for_status()
     data = sorted(r.json()["data"], key=lambda x: x["index"])
     vecs = [row["embedding"] for row in data]
     if normalize:
-        return [l2_normalize(v) for v in vecs]
-    return vecs
+        vecs = [l2_normalize(v) for v in vecs]
+    return vecs, dt
 
 
 def extract_json_payload(stdout: str) -> Any:
@@ -92,7 +112,6 @@ def extract_json_payload(stdout: str) -> Any:
     s = stdout.rstrip()
     if not s:
         return None
-    # Prefer array (llama-bench -o json often emits [{pp},{tg},...])
     for opener, closer in (("[", "]"), ("{", "}")):
         start = s.rfind(opener)
         if start < 0:
@@ -144,6 +163,31 @@ def spearman(xs: list[float], ys: list[float]) -> float:
     if denx <= 0 or deny <= 0:
         return 0.0
     return num / (denx * deny)
+
+
+def probe_vram_mib() -> int | None:
+    """Best-effort NVIDIA VRAM used (MiB). None if nvidia-smi unavailable."""
+    try:
+        p = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if p.returncode != 0:
+            return None
+        vals = []
+        for line in (p.stdout or "").strip().splitlines():
+            line = line.strip()
+            if line:
+                vals.append(int(float(line)))
+        return sum(vals) if vals else None
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +274,6 @@ def read_gguf_kv_u32(path: str, key: str) -> int | None:
     try:
         from gguf import GGUFReader  # noqa: F401
 
-        # Prefer gguf-py; do not fall through to scanner on a miss.
         return _gguf_kv_via_gguf(path, key)
     except Exception:
         pass
@@ -254,27 +297,58 @@ EMBED_PROMPTS = [
 
 
 def cmd_embed(args: argparse.Namespace) -> int:
-    for _ in range(args.warmup):
-        embed_batch(args.url, EMBED_PROMPTS[: args.batch_size])
+    chunks = [
+        EMBED_PROMPTS[i : i + args.batch_size]
+        for i in range(0, len(EMBED_PROMPTS), args.batch_size)
+    ]
 
-    t0 = time.perf_counter()
+    for _ in range(args.warmup):
+        embed_batch(args.url, chunks[0])
+
+    latencies: list[float] = []
     n_texts = 0
     last_vecs: list[list[float]] = []
+    t0 = time.perf_counter()
+
+    def one_round() -> None:
+        nonlocal n_texts, last_vecs
+        if args.concurrency <= 1:
+            for chunk in chunks:
+                vecs, dt = embed_batch(args.url, chunk)
+                latencies.append(dt)
+                last_vecs = vecs
+                n_texts += len(chunk)
+            return
+        with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+            futs = [ex.submit(embed_batch, args.url, chunk) for chunk in chunks]
+            for f in as_completed(futs):
+                vecs, dt = f.result()
+                latencies.append(dt)
+                last_vecs = vecs
+                n_texts += len(vecs)
+
     for _ in range(args.rounds):
-        for i in range(0, len(EMBED_PROMPTS), args.batch_size):
-            chunk = EMBED_PROMPTS[i : i + args.batch_size]
-            last_vecs = embed_batch(args.url, chunk)
-            n_texts += len(chunk)
+        one_round()
+
     elapsed = time.perf_counter() - t0
     qps = n_texts / elapsed if elapsed > 0 else 0.0
+    lat_sorted = sorted(latencies)
 
     summary: dict[str, Any] = {
         "gate": "A/B",
+        "label": args.label,
         "url": args.url,
         "n_texts": n_texts,
         "elapsed_s": elapsed,
         "embed_qps": qps,
         "batch_size": args.batch_size,
+        "concurrency": args.concurrency,
+        "latency_s": {
+            "p50": percentile(lat_sorted, 0.50),
+            "p95": percentile(lat_sorted, 0.95),
+            "mean": statistics.mean(latencies) if latencies else None,
+            "n": len(latencies),
+        },
         "rss_mb_note": "sample server process RSS externally for gate A",
         "n_dim": len(last_vecs[0]) if last_vecs else 0,
         "sample_vecs": last_vecs[:2],
@@ -318,18 +392,33 @@ def cmd_loop_depth(args: argparse.Namespace) -> int:
     return 2
 
 
-def _bench_metrics(payload: Any) -> dict[str, float | None]:
-    """Extract pp/tg avg_ts from llama-bench JSON object or list of objects."""
-    rows: list[dict[str, Any]]
+def _payload_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
-        rows = [x for x in payload if isinstance(x, dict)]
-    elif isinstance(payload, dict):
-        rows = [payload]
-    else:
-        rows = []
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        return [payload]
+    return []
 
+
+def _bench_metrics(payload: Any) -> dict[str, Any]:
+    """Extract pp/tg avg_ts and env fields from llama-bench JSON."""
+    rows = _payload_rows(payload)
     pp = tg = None
+    env: dict[str, Any] = {}
     for row in rows:
+        if not env:
+            for k in (
+                "backends",
+                "gpu_info",
+                "cpu_info",
+                "n_gpu_layers",
+                "flash_attn",
+                "type_k",
+                "type_v",
+                "n_threads",
+            ):
+                if k in row:
+                    env[k] = row[k]
         n_prompt = int(row.get("n_prompt") or 0)
         n_gen = int(row.get("n_gen") or 0)
         avg_ts = row.get("avg_ts")
@@ -341,68 +430,94 @@ def _bench_metrics(payload: Any) -> dict[str, float | None]:
         elif n_gen > 0 and n_prompt == 0:
             tg = avg_ts
         elif n_gen > 0:
-            # combined row: prefer as tg if only one sample shape
             tg = avg_ts if tg is None else tg
             if n_prompt > 0 and pp is None:
                 pp = avg_ts
-    return {"pp_avg_ts": pp, "tg_avg_ts": tg}
+    return {"pp_avg_ts": pp, "tg_avg_ts": tg, "env": env}
 
 
-def cmd_gen_perf(args: argparse.Namespace) -> int:
-    arms = {
-        "baseline_no_fa_f16kv": ["-fa", "0"],
-        "fa": ["-fa", "1"],
-        "fa_q8kv": ["-fa", "1", "-ctk", "q8_0", "-ctv", "q8_0"],
-    }
-    summary: dict[str, Any] = {"gate": "D", "model": args.model, "arms": {}}
-    any_fail = False
+def _device_ngl(device: str, ngl: int) -> int:
+    if device == "cpu":
+        return 0
+    if device == "gpu":
+        return ngl if ngl >= 0 else 99
+    raise ValueError(device)
 
-    for name, extra in arms.items():
-        cmd = [
-            args.bin,
-            "-m",
-            args.model,
-            "-p",
-            "512",
-            "-n",
-            "128",
-            "-r",
-            "3",
-            "-o",
-            "json",
-            *extra,
-        ]
-        print("+", " ".join(cmd), flush=True)
-        p = subprocess.run(cmd, capture_output=True, text=True)
-        if p.returncode != 0:
-            any_fail = True
-            summary["arms"][name] = {
-                "ok": False,
-                "cmd": cmd,
-                "stderr": (p.stderr or "")[-2000:],
-                "stdout": (p.stdout or "")[-2000:],
-            }
-            continue
-        payload = extract_json_payload(p.stdout or "")
-        metrics = _bench_metrics(payload)
-        summary["arms"][name] = {
-            "ok": True,
+
+def _run_gen_arm(
+    *,
+    bin_path: str,
+    model: str,
+    extra: list[str],
+    device: str,
+    ngl: int,
+    threads: int | None,
+    n_prompt: int,
+    n_gen: int,
+    reps: int,
+    vram_probe: bool,
+) -> dict[str, Any]:
+    cmd = [
+        bin_path,
+        "-m",
+        model,
+        "-p",
+        str(n_prompt),
+        "-n",
+        str(n_gen),
+        "-r",
+        str(reps),
+        "-ngl",
+        str(_device_ngl(device, ngl)),
+        "-o",
+        "json",
+        *extra,
+    ]
+    if threads is not None and threads > 0:
+        cmd.extend(["-t", str(threads)])
+
+    print("+", " ".join(cmd), flush=True)
+    vram_before = probe_vram_mib() if vram_probe and device == "gpu" else None
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    vram_after = probe_vram_mib() if vram_probe and device == "gpu" else None
+
+    if p.returncode != 0:
+        return {
+            "ok": False,
+            "device": device,
             "cmd": cmd,
-            "metrics": metrics,
-            "result": payload,
+            "stderr": (p.stderr or "")[-2000:],
+            "stdout": (p.stdout or "")[-2000:],
+            "vram_mib_before": vram_before,
+            "vram_mib_after": vram_after,
         }
 
-    base = summary["arms"].get("baseline_no_fa_f16kv", {})
-    fa = summary["arms"].get("fa", {})
-    q8 = summary["arms"].get("fa_q8kv", {})
+    payload = extract_json_payload(p.stdout or "")
+    metrics = _bench_metrics(payload)
+    out: dict[str, Any] = {
+        "ok": True,
+        "device": device,
+        "cmd": cmd,
+        "metrics": metrics,
+        "result": payload,
+        "vram_mib_before": vram_before,
+        "vram_mib_after": vram_after,
+    }
+    if vram_before is not None and vram_after is not None:
+        out["vram_mib_delta"] = vram_after - vram_before
+    return out
+
+
+def _arm_gates(arms: dict[str, Any]) -> dict[str, Any]:
+    base = arms.get("baseline_no_fa_f16kv") or {}
+    fa = arms.get("fa") or {}
+    q8 = arms.get("fa_q8kv") or {}
 
     def tg(arm: dict) -> float | None:
-        m = arm.get("metrics") or {}
-        return m.get("tg_avg_ts")
+        return (arm.get("metrics") or {}).get("tg_avg_ts")
 
     def pp(arm: dict) -> float | None:
-        m = arm.get("metrics") or {}
-        return m.get("pp_avg_ts")
+        return (arm.get("metrics") or {}).get("pp_avg_ts")
 
     b_tg, f_tg, q_tg = tg(base), tg(fa), tg(q8)
     b_pp, f_pp = pp(base), pp(fa)
@@ -419,21 +534,96 @@ def cmd_gen_perf(args: argparse.Namespace) -> int:
 
     gate_q8 = q8_tg_reg is not None and q8_tg_reg >= -0.05
 
-    summary["gates"] = {
+    # VRAM: FA+q8 vs FA peak after (when probed)
+    v_fa = fa.get("vram_mib_after")
+    v_q8 = q8.get("vram_mib_after")
+    vram_drop = None
+    gate_vram = None
+    if isinstance(v_fa, int) and isinstance(v_q8, int) and v_fa > 0:
+        vram_drop = 1.0 - (v_q8 / v_fa)
+        gate_vram = vram_drop >= 0.20
+
+    return {
         "fa_tg_lift": fa_tg_lift,
         "fa_pp_lift": fa_pp_lift,
         "q8kv_tg_regress": q8_tg_reg,
+        "vram_drop_vs_fa": vram_drop,
         "gate_fa_pass": gate_fa,
         "gate_q8kv_pass": gate_q8,
-        "note": "VRAM -20% only when GPU JSON exposes it; CPU builds skip VRAM",
+        "gate_vram_pass": gate_vram,
     }
+
+
+def cmd_gen_perf(args: argparse.Namespace) -> int:
+    devices = ["cpu", "gpu"] if args.device == "both" else [args.device]
+    arm_defs = {
+        "baseline_no_fa_f16kv": ["-fa", "0"],
+        "fa": ["-fa", "1"],
+        "fa_q8kv": ["-fa", "1", "-ctk", "q8_0", "-ctv", "q8_0"],
+    }
+
+    summary: dict[str, Any] = {
+        "gate": "D",
+        "model": args.model,
+        "devices": {},
+        "config": {
+            "n_prompt": args.prompt,
+            "n_gen": args.gen,
+            "reps": args.reps,
+            "ngl": args.ngl,
+            "threads": args.threads,
+            "vram_probe": args.vram_probe,
+        },
+    }
+    any_fail = False
+    require_fail = False
+
+    for device in devices:
+        arms: dict[str, Any] = {}
+        for name, extra in arm_defs.items():
+            arms[name] = _run_gen_arm(
+                bin_path=args.bin,
+                model=args.model,
+                extra=extra,
+                device=device,
+                ngl=args.ngl,
+                threads=args.threads,
+                n_prompt=args.prompt,
+                n_gen=args.gen,
+                reps=args.reps,
+                vram_probe=args.vram_probe,
+            )
+            if not arms[name].get("ok"):
+                any_fail = True
+        gates = _arm_gates(arms)
+        summary["devices"][device] = {"arms": arms, "gates": gates}
+        if args.require_gates and not gates.get("gate_fa_pass"):
+            require_fail = True
+        if (
+            args.require_gates
+            and device == "gpu"
+            and args.vram_probe
+            and gates.get("gate_vram_pass") is False
+        ):
+            require_fail = True
+
+    # Cross-device speedup when both ran
+    if "cpu" in summary["devices"] and "gpu" in summary["devices"]:
+        cpu_fa = (summary["devices"]["cpu"]["arms"].get("fa") or {}).get("metrics") or {}
+        gpu_fa = (summary["devices"]["gpu"]["arms"].get("fa") or {}).get("metrics") or {}
+        c_tg, g_tg = cpu_fa.get("tg_avg_ts"), gpu_fa.get("tg_avg_ts")
+        c_pp, g_pp = cpu_fa.get("pp_avg_ts"), gpu_fa.get("pp_avg_ts")
+        summary["cpu_vs_gpu"] = {
+            "fa_tg_speedup": (g_tg / c_tg) if (g_tg and c_tg) else None,
+            "fa_pp_speedup": (g_pp / c_pp) if (g_pp and c_pp) else None,
+        }
 
     write_json(args.out, summary)
     if any_fail:
         print("FAIL: one or more llama-bench arms failed", file=sys.stderr)
         return 1
-    if args.require_gates and not gate_fa:
-        print("FAIL: FA gate (need +10% tg or +15% pp)", file=sys.stderr)
+    if require_fail:
+        print("FAIL: require-gates (FA and/or GPU VRAM)", file=sys.stderr)
         return 1
     return 0
 
@@ -466,8 +656,8 @@ def cmd_e2e(args: argparse.Namespace) -> int:
     doc_text = {did: text for did, text in CORPUS}
 
     t_emb0 = time.perf_counter()
-    doc_vecs = embed_batch(args.embed_url, [t for _, t in CORPUS], normalize=True)
-    q_vecs = embed_batch(args.embed_url, [q for q, _ in QUERIES], normalize=True)
+    doc_vecs, _ = embed_batch(args.embed_url, [t for _, t in CORPUS], normalize=True)
+    q_vecs, _ = embed_batch(args.embed_url, [q for q, _ in QUERIES], normalize=True)
     emb_ms = (time.perf_counter() - t_emb0) * 1000
 
     hits = 0
@@ -615,11 +805,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
 
-    p_embed = sp.add_parser("embed", help="Gate A/B: embed QPS + cosine vs --ref")
+    p_embed = sp.add_parser("embed", help="Gate A/B: embed QPS + latency + cosine vs --ref")
     p_embed.add_argument("--url", default="http://127.0.0.1:8080")
     p_embed.add_argument("--warmup", type=int, default=2)
     p_embed.add_argument("--rounds", type=int, default=10)
     p_embed.add_argument("--batch-size", type=int, default=8)
+    p_embed.add_argument("--concurrency", type=int, default=1, help="parallel embed batches")
+    p_embed.add_argument("--label", default="", help="tag run e.g. cpu / gpu")
     p_embed.add_argument("--out", default="")
     p_embed.add_argument("--ref", default="", help="previous JSON for cosine gate")
     p_embed.set_defaults(func=cmd_embed)
@@ -630,11 +822,31 @@ def main() -> int:
     p_loop.add_argument("--require", action="store_true")
     p_loop.set_defaults(func=cmd_loop_depth)
 
-    p_gen = sp.add_parser("gen-perf", help="Gate D: llama-bench FA / q8 KV arms")
+    p_gen = sp.add_parser("gen-perf", help="Gate D: llama-bench FA / q8 KV on CPU and/or GPU")
     p_gen.add_argument("--bin", required=True, help="path to llama-bench")
     p_gen.add_argument("-m", "--model", required=True)
     p_gen.add_argument("--out", default="gen_perf.json")
-    p_gen.add_argument("--require-gates", action="store_true", help="exit 1 if FA gate fails")
+    p_gen.add_argument(
+        "--device",
+        choices=["cpu", "gpu", "both"],
+        default="cpu",
+        help="cpu=-ngl 0; gpu=-ngl N; both=matrix + cpu_vs_gpu speedup",
+    )
+    p_gen.add_argument("--ngl", type=int, default=99, help="GPU n_gpu_layers (ignored for cpu)")
+    p_gen.add_argument("--threads", type=int, default=0, help="llama-bench -t (0=default)")
+    p_gen.add_argument("--prompt", type=int, default=512, help="llama-bench -p")
+    p_gen.add_argument("--gen", type=int, default=128, help="llama-bench -n")
+    p_gen.add_argument("--reps", type=int, default=3, help="llama-bench -r")
+    p_gen.add_argument(
+        "--vram-probe",
+        action="store_true",
+        help="probe nvidia-smi memory.used around GPU arms; enable VRAM gate",
+    )
+    p_gen.add_argument(
+        "--require-gates",
+        action="store_true",
+        help="exit 1 if FA gate fails (and VRAM gate when --vram-probe on gpu)",
+    )
     p_gen.set_defaults(func=cmd_gen_perf)
 
     p_e2e = sp.add_parser("e2e", help="Gate F: hit@k + optional chat e2e")
@@ -655,6 +867,8 @@ def main() -> int:
     p_sp.set_defaults(func=cmd_sparse)
 
     args = ap.parse_args()
+    if getattr(args, "threads", None) == 0:
+        args.threads = None
     return int(args.func(args))
 
 

@@ -1,5 +1,6 @@
 # RAG-stack measurable baselines
 
+
 Evidence package for gates A-F. Fill numbers on the target machine; do not claim fixes without before/after JSON.
 
 Harness: `python tools/server/bench/rag-stack/rag_stack_bench.py <subcommand> ...`
@@ -36,9 +37,10 @@ python tools/server/bench/rag-stack/rag_stack_bench.py loop-depth -m /path/nanbe
 
 python tools/server/bench/rag-stack/rag_stack_bench.py gen-perf \
   --bin ./build/bin/Release/llama-bench.exe \
-  --model /path/nanbeige42-3b-Q4_K_M.gguf --out gen_before.json
+  --model /path/nanbeige42-3b-Q4_K_M.gguf --device both --vram-probe --out gen_before.json
 ```
 
+CPU: `--device cpu` (`-ngl 0`). GPU: `--device gpu --ngl 99 --vram-probe` (nvidia-smi). `--device both` also emits `cpu_vs_gpu` FA speedup.
 ### RAG e2e (gate F, nightly)
 
 ```bash
