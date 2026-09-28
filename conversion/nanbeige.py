@@ -14,9 +14,12 @@ class NanbeigeModel(LlamaModel):
         super().set_gguf_parameters()
         hparams = self.hparams
 
-        n_loops = int(hparams.get("num_loops", 1) or 1)
+        n_loops = int(hparams.get("num_loops", 0) or 0)
         if n_loops < 1:
-            n_loops = 1
+            raise ValueError(
+                "Nanbeige GGUF requires hparams num_loops >= 1 "
+                "(Nanbeige4.2-3B uses num_loops=2). Refusing silent default."
+            )
         self.gguf_writer.add_num_loops(n_loops)
         logger.info(f"gguf: num_loops = {n_loops}")
 

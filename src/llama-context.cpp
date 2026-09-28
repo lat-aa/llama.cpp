@@ -1467,30 +1467,83 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     return res;
 }
 
-int llama_context::encode(const llama_batch_ext & batch_inp) {
-    if (batch_inp.tokens.empty()) {
+int llama_context::encode(const llama_batch_ext & batch_inp_in) {
+    if (batch_inp_in.tokens.empty()) {
         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
         return -1;
     }
 
     const auto & hparams = model.hparams;
 
-    if (batch_inp.n_embd > 0 && batch_inp.n_embd != hparams.n_embd_inp_enc()) {
+    if (batch_inp_in.n_embd > 0 && batch_inp_in.n_embd != hparams.n_embd_inp_enc()) {
         LLAMA_LOG_ERROR("%s: embd row width %zu does not match the encoder input %u\n",
-                __func__, batch_inp.n_embd, hparams.n_embd_inp_enc());
+                __func__, batch_inp_in.n_embd, hparams.n_embd_inp_enc());
         return -1;
     }
 
     // eagle3/DFlash: features as encoder input, and non-draft paths fall back to model's input dim
     const int64_t n_vocab = model.vocab.n_tokens();
 
-    // note: during encode, we always output all tokens and skip position continuity checks (output_all=true)
-    if (!balloc->init(batch_inp, model.vocab, true)) {
+    // Gate B: CLS/LAST/RANK embeddings need only the pooling target as graph outputs so
+    // BERT-style last-layer get_rows can shrink the final FFN. MEAN/NONE keep all tokens.
+    const bool output_all =
+        !cparams.embeddings ||
+        cparams.pooling_type == LLAMA_POOLING_TYPE_MEAN ||
+        cparams.pooling_type == LLAMA_POOLING_TYPE_NONE ||
+        cparams.pooling_type == LLAMA_POOLING_TYPE_UNSPECIFIED;
+
+    llama_batch_ext batch_inp = batch_inp_in;
+    if (cparams.embeddings && !output_all &&
+        (cparams.pooling_type == LLAMA_POOLING_TYPE_CLS ||
+         cparams.pooling_type == LLAMA_POOLING_TYPE_LAST ||
+         cparams.pooling_type == LLAMA_POOLING_TYPE_RANK)) {
+        const bool last =
+            cparams.pooling_type == LLAMA_POOLING_TYPE_LAST ||
+            (cparams.pooling_type == LLAMA_POOLING_TYPE_RANK && cparams.causal_attn);
+        const uint32_t n_seq_max = cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max;
+        std::vector<int> best_pos(n_seq_max, -1);
+        std::vector<int> best_idx(n_seq_max, -1);
+        bool any_unmarked = false;
+        int  n_marked     = 0;
+        for (size_t i = 0; i < batch_inp.tokens.size(); ++i) {
+            auto & tok = batch_inp.tokens[i];
+            if (tok.output) {
+                n_marked++;
+            } else {
+                any_unmarked = true;
+            }
+            for (auto seq_id : tok.seq_ids) {
+                if (seq_id < 0 || (uint32_t) seq_id >= n_seq_max) {
+                    continue;
+                }
+                const int pos = tok.pos[0];
+                if (best_pos[seq_id] < 0 ||
+                    ( last && pos >= best_pos[seq_id]) ||
+                    (!last && pos <  best_pos[seq_id])) {
+                    best_pos[seq_id] = pos;
+                    best_idx[seq_id] = (int) i;
+                }
+            }
+        }
+        if (!any_unmarked && n_marked == (int) batch_inp.tokens.size() && n_marked > 0) {
+            for (auto & tok : batch_inp.tokens) {
+                tok.output = false;
+            }
+            for (uint32_t s = 0; s < n_seq_max; ++s) {
+                if (best_idx[s] >= 0) {
+                    batch_inp.tokens[best_idx[s]].output = true;
+                }
+            }
+        }
+    }
+
+    if (!balloc->init(batch_inp, model.vocab, output_all)) {
         LLAMA_LOG_ERROR("%s: failed to initialize batch\n", __func__);
         return -1;
     }
 
-    const uint32_t n_tokens = balloc->get_n_tokens();
+    const uint32_t n_tokens     = balloc->get_n_tokens();
+    const uint32_t n_outputs_all = balloc->get_n_outputs();
 
     // [TAG_NO_CACHE_PAD]
     // TODO: add new split mode where we pad the input sequences so that ubatch.equal_seqs == true
@@ -1514,17 +1567,23 @@ int llama_context::encode(const llama_batch_ext & batch_inp) {
 
     n_queued_tokens += n_tokens;
 
-    // reserve output buffer
-    if (output_reserve(n_tokens) < n_tokens) {
-        LLAMA_LOG_ERROR("%s: could not reserve space for batch with %u outputs\n", __func__, n_tokens);
+    // reserve output buffer (outputs may be << n_tokens for CLS pooling)
+    if (output_reserve(n_outputs_all) < n_outputs_all) {
+        LLAMA_LOG_ERROR("%s: could not reserve space for batch with %u outputs\n", __func__, n_outputs_all);
         return -2;
     };
 
-    for (uint32_t i = 0; i < n_tokens; ++i) {
-        output_ids[i] = i;
+    {
+        uint32_t out_i = 0;
+        for (uint32_t i = 0; i < n_tokens; ++i) {
+            if (ubatch.output[i]) {
+                output_ids[i] = out_i++;
+            } else {
+                output_ids[i] = -1;
+            }
+        }
+        n_outputs = n_outputs_all;
     }
-
-    n_outputs = n_tokens;
 
     const auto causal_attn_org = cparams.causal_attn;
 
@@ -1728,8 +1787,13 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
 
     const int64_t n_vocab = vocab.n_tokens();
 
-    // when computing embeddings, all tokens are output
-    const bool output_all   = cparams.embeddings;
+    // MEAN/NONE need every token. CLS/LAST/RANK can keep a single token per sequence
+    // so the last-layer FFN (e.g. BERT get_rows on out_ids) stays narrow - gate B.
+    const bool output_all =
+        cparams.embeddings &&
+        (cparams.pooling_type == LLAMA_POOLING_TYPE_MEAN ||
+         cparams.pooling_type == LLAMA_POOLING_TYPE_NONE ||
+         cparams.pooling_type == LLAMA_POOLING_TYPE_UNSPECIFIED);
     const bool has_samplers = !sampling.samplers.empty();
 
     const uint32_t n_seq_max = cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max;
@@ -2114,6 +2178,26 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
     bool has_logits     = true;
     bool has_embd       = cparams.embeddings;
     bool has_embd_nextn = cparams.embeddings_nextn;
+
+    // Encoder / embedding-only arches never consume vocab logits in embedding mode.
+    // Skipping the n_vocab * n_outputs buffer is gate A for BGE-M3-class models (#29388).
+    if (cparams.embeddings) {
+        switch (model.arch) {
+            case LLM_ARCH_BERT:
+            case LLM_ARCH_JINA_BERT_V2:
+            case LLM_ARCH_JINA_BERT_V3:
+            case LLM_ARCH_NOMIC_BERT:
+            case LLM_ARCH_NOMIC_BERT_MOE:
+            case LLM_ARCH_NEO_BERT:
+            case LLM_ARCH_EUROBERT:
+            case LLM_ARCH_MODERN_BERT:
+            case LLM_ARCH_GEMMA_EMBEDDING:
+                has_logits = false;
+                break;
+            default:
+                break;
+        }
+    }
 
     // TODO: hacky enc-dec support
     if (model.arch == LLM_ARCH_T5) {

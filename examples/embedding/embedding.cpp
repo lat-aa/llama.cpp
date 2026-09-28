@@ -27,10 +27,19 @@ static std::vector<std::string> split_lines(const std::string & s, const std::st
     return lines;
 }
 
-static void batch_add_seq(llama_batch & batch, const std::vector<int32_t> & tokens, llama_seq_id seq_id) {
+static void batch_add_seq(llama_batch & batch, const std::vector<int32_t> & tokens, llama_seq_id seq_id,
+                          enum llama_pooling_type pooling_type, bool causal) {
     size_t n_tokens = tokens.size();
     for (size_t i = 0; i < n_tokens; i++) {
-        common_batch_add(batch, tokens[i], i, { seq_id }, true);
+        bool output = true;
+        if (pooling_type == LLAMA_POOLING_TYPE_CLS ||
+            (pooling_type == LLAMA_POOLING_TYPE_RANK && !causal)) {
+            output = (i == 0);
+        } else if (pooling_type == LLAMA_POOLING_TYPE_LAST ||
+                   (pooling_type == LLAMA_POOLING_TYPE_RANK && causal)) {
+            output = (i + 1 == n_tokens);
+        }
+        common_batch_add(batch, tokens[i], i, { seq_id }, output);
     }
 }
 
@@ -278,7 +287,7 @@ int main(int argc, char ** argv) {
         }
 
         // add to batch
-        batch_add_seq(batch, inp, s);
+        batch_add_seq(batch, inp, s, pooling_type, llama_get_causal_attn(ctx));
         s += 1;
     }
 

@@ -1,22 +1,44 @@
 #include "models.h"
 
+#include <stdexcept>
+
 void llama_model_nanbeige::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
 
-    uint32_t n_loops_u = 1;
-    ml.get_key(LLM_KV_NUM_LOOPS, n_loops_u, false);
-    GGML_ASSERT(n_loops_u >= 1);
+    uint32_t n_loops_u = 0;
+    // Gate C: missing loop depth must not silently run as a half-depth model.
+    // Canonical key is num_loops; some third-party quants used loop_count.
+    bool from_alias = false;
+    if (!ml.get_key(LLM_KV_NUM_LOOPS, n_loops_u, /* required */ false)) {
+        if (!ml.get_key("nanbeige.loop_count", n_loops_u, /* required */ false) || n_loops_u < 1) {
+            throw std::runtime_error("nanbeige: missing num_loops (or nanbeige.loop_count)");
+        }
+        from_alias = true;
+    }
+    if (n_loops_u < 1) {
+        throw std::runtime_error("nanbeige: invalid num_loops (required >= 1)");
+    }
 
     skip_loop_final_norm = false;
     ml.get_key(LLM_KV_SKIP_LOOP_FINAL_NORM, skip_loop_final_norm, false);
 
-    n_layer_phys = (int) hparams.n_layer();
-
-    // Bound-check before casting: signed int mul can overflow and bypass the guard.
-    GGML_ASSERT((size_t) n_layer_phys * (size_t) n_loops_u <= (size_t) LLAMA_MAX_LAYERS);
     n_loops = (int) n_loops_u;
+    const int n_reported = (int) hparams.n_layer();
 
-    // Expand logical layer count before load_tensors() allocates layers / KV.
+    // Canonical: block_count = physical, expand to physical * n_loops.
+    // Fork (loop_count): block_count already = logical, tensors only for physical.
+    if (from_alias && n_loops > 1 && n_reported % n_loops == 0) {
+        n_layer_phys = n_reported / n_loops;
+        // n_layer_all already set from block_count (logical).
+    } else {
+        n_layer_phys = n_reported;
+        GGML_ASSERT((size_t) n_layer_phys * (size_t) n_loops_u <= (size_t) LLAMA_MAX_LAYERS);
+        if (n_loops > 1) {
+            hparams.n_layer_all = (uint32_t) ((size_t) n_layer_phys * (size_t) n_loops);
+        }
+    }
+
+    // Expand per-layer hparams across loops before load_tensors() allocates layers / KV.
     if (n_loops > 1) {
         for (int j = 1; j < n_loops; ++j) {
             for (int i = 0; i < n_layer_phys; ++i) {
@@ -28,7 +50,6 @@ void llama_model_nanbeige::load_arch_hparams(llama_model_loader & ml) {
                 hparams.is_recr_impl[dst]  = hparams.is_recr_impl[i];
             }
         }
-        hparams.n_layer_all = (uint32_t) ((size_t) n_layer_phys * (size_t) n_loops);
     }
 
     type = LLM_TYPE_UNKNOWN;

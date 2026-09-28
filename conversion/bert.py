@@ -83,6 +83,15 @@ class BertModel(TextModel):
         if name in ("embeddings.position_ids", "pooler.dense.weight", "pooler.dense.bias"):
             return None
 
+        # BGE-M3 sparse/ColBERT heads: not wired in runtime yet (gate E).
+        # Drop explicitly so converts stay dense-only until FlagEmbedding parity lands.
+        if name in ("sparse_linear.weight", "colbert_linear.weight"):
+            logger.warning(
+                "skipping %s (BGE-M3 sparse/ColBERT not enabled; see tools/server/bench/rag-stack/)",
+                name,
+            )
+            return None
+
         if name.startswith("cls.predictions"):
             return None
 

@@ -3722,8 +3722,14 @@ void llm_graph_context::build_pooling(
         case LLAMA_POOLING_TYPE_CLS:
         case LLAMA_POOLING_TYPE_LAST:
             {
-                ggml_tensor * inp_cls = build_inp_cls();
-                cur = ggml_get_rows(ctx0, inp, inp_cls);
+                // When decode already narrowed outputs to the pooling targets (gate B),
+                // t_embd has one row per unique sequence in out_ids order.
+                if (inp->ne[1] == n_outputs && n_outputs == (int64_t) ubatch.n_seqs_unq) {
+                    cur = inp;
+                } else {
+                    ggml_tensor * inp_cls = build_inp_cls();
+                    cur = ggml_get_rows(ctx0, inp, inp_cls);
+                }
             } break;
         case LLAMA_POOLING_TYPE_RANK:
             {
@@ -3732,6 +3738,8 @@ void llm_graph_context::build_pooling(
                     // https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/modular_modernbert.py#L1404-1411
                     ggml_tensor * inp_mean = build_inp_mean();
                     cur = ggml_mul_mat(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, inp)), inp_mean);
+                } else if (inp->ne[1] == n_outputs && n_outputs == (int64_t) ubatch.n_seqs_unq) {
+                    cur = inp;
                 } else {
                     ggml_tensor * inp_cls = build_inp_cls();
                     cur = ggml_get_rows(ctx0, inp, inp_cls);

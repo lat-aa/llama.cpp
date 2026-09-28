@@ -3733,13 +3733,31 @@ private:
                             break;
                         }
 
-                        // embedding requires all tokens in the batch to be output;
+                        // embedding MEAN/NONE need every token marked; CLS/LAST/RANK only the
+                        // pooling target (decode also shrinks if the client marked all).
+                        bool mark_output = false;
+                        if (slot.need_embd()) {
+                            const auto pooling = llama_pooling_type(ctx_tgt);
+                            if (pooling == LLAMA_POOLING_TYPE_MEAN ||
+                                pooling == LLAMA_POOLING_TYPE_NONE ||
+                                pooling == LLAMA_POOLING_TYPE_UNSPECIFIED) {
+                                mark_output = true;
+                            } else if (pooling == LLAMA_POOLING_TYPE_CLS ||
+                                       (pooling == LLAMA_POOLING_TYPE_RANK && !llama_get_causal_attn(ctx_tgt))) {
+                                mark_output = (slot.prompt.n_tokens() == 0);
+                            } else if (pooling == LLAMA_POOLING_TYPE_LAST ||
+                                       (pooling == LLAMA_POOLING_TYPE_RANK && llama_get_causal_attn(ctx_tgt))) {
+                                mark_output = (slot.prompt.n_tokens() + 1 == slot.task->n_tokens());
+                            } else {
+                                mark_output = true;
+                            }
+                        }
                         // MTP also wants logits at every prompt position so the
                         // streaming hook can mirror t_h_nextn into ctx_dft.
                         add_ok &= batch.add(slot.id,
                             cur_tok,
                             /* pos       = */ slot.prompt.tokens.pos_next(),
-                            /* output    = */ slot.need_embd(),
+                            /* output    = */ mark_output,
                             /* is_prompt = */ true);
                         slot.prompt.tokens.push_back(cur_tok);
 

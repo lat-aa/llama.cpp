@@ -210,7 +210,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--mcp-servers-json JSON` | experimental: inline JSON with MCP server definitions (Cursor-compatible format) - do not enable in untrusted environments (default: none)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_MCP_SERVERS_JSON) |
 | `-ag, --agent, -no-ag, --no-agent` | whether to enable CORS proxy and all built-in tools - do not enable in untrusted environments (default: disabled)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_AGENT) |
 | `--ui, --webui, --no-ui, --no-webui` | whether to enable the Web UI (default: enabled)<br/>(env: LLAMA_ARG_UI) |
-| `--embedding, --embeddings` | restrict to only support embedding use case; use only with dedicated embedding models (default: disabled)<br/>(env: LLAMA_ARG_EMBEDDINGS) |
+| `--embedding, --embeddings` | restrict to only support embedding use case; use only with dedicated embedding models (default: disabled)<br/>for BGE-M3 dense: prefer `--pooling cls -fa on` with large `-ub/-b` and `-np`; see `tools/server/bench/rag-stack/`<br/>(env: LLAMA_ARG_EMBEDDINGS) |
 | `--rerank, --reranking` | enable reranking endpoint on server (default: disabled)<br/>(env: LLAMA_ARG_RERANKING) |
 | `--api-key KEY` | API key to use for authentication, multiple keys can be provided as a comma-separated list (default: none)<br/>(env: LLAMA_API_KEY) |
 | `--api-key-file FNAME` | path to file containing API keys, one per line; lines starting with a hash are treated as comments (default: none)<br/>(env: LLAMA_ARG_API_KEY_FILE) |
@@ -764,6 +764,8 @@ This endpoint also supports multimodal embeddings. See the documentation for the
    2: Euclidean/L2
   >2: P-Norm
 ```
+
+For BGE-M3 dense throughput, pack many short sequences (`-np`) into one large `-ub`, keep `--pooling cls` and `--embd-normalize 2`. Measurable gates live under `tools/server/bench/rag-stack/`. For Nanbeige4.2-3B chat, verify GGUF `nanbeige.num_loops` (must be 2 for 4.2-3B), prefer `-fa on -ctk q8_0 -ctv q8_0` because looped depth doubles logical KV layers.
 
 ### POST `/reranking`: Rerank documents according to a given query
 
