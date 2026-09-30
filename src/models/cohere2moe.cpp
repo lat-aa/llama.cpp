@@ -184,15 +184,9 @@ llama_model_cohere2moe::graph::graph(const llama_model & model, const llm_graph_
             if (is_swa || force_rope) {
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow);
+                Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
 
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow);
+                Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
             }
 
             cb(Qcur, "Qcur", il);
@@ -357,14 +351,8 @@ llama_model_cohere2moe::graph_mtp::graph_mtp(const llama_model & model, const ll
 
     auto [Qcur, Kcur, Vcur] = build_qkv(layer, cur, n_embd_head, n_head, n_head_kv, il);
     ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
-    Qcur = ggml_rope_ext(
-            ctx0, Qcur, inp_pos, rope_factors,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
-    Kcur = ggml_rope_ext(
-            ctx0, Kcur, inp_pos, rope_factors,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
+    Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
 
     cb(Qcur, "mtp_Qcur", il);
     cb(Kcur, "mtp_Kcur", il);

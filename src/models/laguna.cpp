@@ -323,9 +323,7 @@ llama_model_laguna::graph::graph(const llama_model & model, const llm_graph_para
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, nullptr);
 
     ggml_build_forward_expand(gf, cur);
 }

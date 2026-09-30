@@ -397,12 +397,10 @@ llama_model_glm_dsa::graph::graph(const llama_model & model, const llm_graph_par
                                               ggml_row_size(kv_cmpr_pe->type, kv_lora_rank));
             cb(k_pe, "k_pe", il);
 
-            q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                                 ext_factor, attn_factor, beta_fast, beta_slow);
+            q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
             cb(q_pe, "q_pe", il);
 
-            k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                                 ext_factor, attn_factor, beta_fast, beta_slow);
+            k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
             cb(k_pe, "k_pe", il);
 
             kv_cmpr = build_norm(kv_cmpr, model.layers[il].attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
@@ -658,12 +656,10 @@ llama_model_glm_dsa::graph_mtp::graph_mtp(const llama_model & model, const llm_g
                                           ggml_row_size(kv_cmpr_pe->type, kv_lora_rank));
         cb(k_pe, "mtp_k_pe", il);
 
-        q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                             ext_factor, attn_factor, beta_fast, beta_slow);
+        q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
         cb(q_pe, "mtp_q_pe", il);
 
-        k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                             ext_factor, attn_factor, beta_fast, beta_slow);
+        k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
         cb(k_pe, "mtp_k_pe", il);
 
         kv_cmpr = build_norm(kv_cmpr, layer.attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);

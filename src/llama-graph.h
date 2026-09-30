@@ -1074,6 +1074,13 @@ struct llm_graph_context {
            llm_norm_type   type,
                      int   il) const;
 
+    // apply RoPE, using this context's rope hyperparameters
+    ggml_tensor * build_rope(
+             ggml_tensor * cur,
+             ggml_tensor * pos,
+             ggml_tensor * factors,
+                     int   n_dims) const;
+
 
     // compute Q, K, V projections with optional bias and reshape
     // supports both fused wqkv and separate wq/wk/wv paths
@@ -1389,6 +1396,12 @@ struct llm_graph_context {
             ggml_tensor * dense_2,
             ggml_tensor * dense_2_b,
             ggml_tensor * dense_3) const;
+
+    // emit the lm_head output; the common tail of a text-generation graph
+    ggml_tensor * build_output_head(
+            ggml_tensor * cur,
+            ggml_tensor * w,
+            ggml_tensor * w_s) const;
 };
 
 // TODO: better name

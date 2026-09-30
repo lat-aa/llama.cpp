@@ -143,10 +143,8 @@ llama_model_lfm2::graph<iswa>::graph(const llama_model & model, const llm_graph_
         cb(k, "model.layers.{}.self_attn.k_layernorm", il);
 
         // RoPE
-        q = ggml_rope_ext(ctx0, q, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor,
-                          attn_factor, beta_fast, beta_slow);
-        k = ggml_rope_ext(ctx0, k, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale, ext_factor,
-                          attn_factor, beta_fast, beta_slow);
+        q = build_rope(q, inp_pos, nullptr, n_rot);
+        k = build_rope(k, inp_pos, nullptr, n_rot);
 
         cur = build_attn(inp_attn,
                 model.layers[il].wo, NULL, model.layers[il].wo_s,

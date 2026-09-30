@@ -42,13 +42,7 @@ void llama_model_grok::load_arch_tensors(llama_model_loader &) {
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
 
     // output
-    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
-
-    // if output is NULL, init from the input tok embed
-    if (output == NULL) {
-        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
-    }
+    create_tensor_output(n_embd, n_vocab);
 
     const int64_t n_ff_exp = hparams.n_ff_exp() ? hparams.n_ff_exp() : n_ff/* / n_expert_used*/; // grok-1 n_ff_exp == n_ff
     for (int i = 0; i < n_layer; ++i) {
@@ -116,17 +110,9 @@ llama_model_grok::graph::graph(const llama_model & model, const llm_graph_params
             auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
                     n_embd_head, n_head, n_head_kv, il);
 
-            Qcur = ggml_rope_ext(
-                    ctx0, Qcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            Qcur = build_rope(Qcur, inp_pos, nullptr, n_rot);
 
-            Kcur = ggml_rope_ext(
-                    ctx0, Kcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            Kcur = build_rope(Kcur, inp_pos, nullptr, n_rot);
 
             cb(Qcur, "Qcur", il);
             cb(Kcur, "Kcur", il);

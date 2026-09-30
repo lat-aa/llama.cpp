@@ -135,12 +135,8 @@ llama_model_hy_v3::graph::graph(const llama_model & model, const llm_graph_param
             Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, nullptr, LLM_NORM_RMS, il);
             Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, nullptr, LLM_NORM_RMS, il);
 
-            Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, rope_factors,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow);
-            Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, rope_factors,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow);
+            Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
+            Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
 
             cur = build_attn(inp_attn,
                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
@@ -223,9 +219,7 @@ llama_model_hy_v3::graph::graph(const llama_model & model, const llm_graph_param
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur, model.output_s);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, model.output_s);
 
     ggml_build_forward_expand(gf, cur);
 }
@@ -301,12 +295,8 @@ llama_model_hy_v3::graph_mtp::graph_mtp(const llama_model & model, const llm_gra
         Qcur = build_norm(Qcur, layer.attn_q_norm, nullptr, LLM_NORM_RMS, il);
         Kcur = build_norm(Kcur, layer.attn_k_norm, nullptr, LLM_NORM_RMS, il);
 
-        Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, rope_factors,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
-        Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, rope_factors,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
+        Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
+        Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
 
         const float kq_scale = 1.0f / sqrtf(float(n_embd_head));
 

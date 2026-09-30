@@ -313,14 +313,10 @@ llama_model_deepseek2::graph_mtp::graph_mtp(const llama_model & model, const llm
     const float kq_scale =
             1.0f * mscale * mscale / sqrtf(float(n_embd_head_k_mla));
 
-    q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
     cb(q_pe, "mtp_q_pe_rope", il);
 
-    k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
     cb(k_pe, "mtp_k_pe_rope", il);
 
     q_nope = ggml_permute(ctx0, q_nope, 0, 2, 1, 3);
@@ -530,8 +526,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                                               ggml_row_size(kv_cmpr_pe->type, kv_lora_rank));
             cb(k_pe, "k_pe", il);
 
-            k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                                 ext_factor, attn_factor, beta_fast, beta_slow);
+            k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
             cb(k_pe, "k_pe", il);
 
             kv_cmpr = build_norm(kv_cmpr, model.layers[il].attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
@@ -548,8 +543,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                                                   q->nb[1], q->nb[2], ggml_row_size(q->type, n_embd_head_qk_nope));
                 cb(q_pe, "q_pe", il);
 
-                q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                                     ext_factor, attn_factor, beta_fast, beta_slow);
+                q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
                 cb(q_pe, "q_pe", il);
 
                 // {n_embd_head_qk_nope, n_tokens, n_head}
@@ -612,8 +606,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                 cb(Vcur, "Vcur_cont", il);
 
                 // RoPE is applied to the trailing dims only
-                ggml_tensor * Qcur = ggml_rope_ext(ctx0, q, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
-                                                   freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                ggml_tensor * Qcur = build_rope(q, inp_pos, nullptr, n_rot);
                 Qcur = ggml_rope_set_offset(Qcur, n_embd_head_qk_nope);
                 cb(Qcur, "Qcur", il);
 

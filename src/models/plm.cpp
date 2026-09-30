@@ -133,20 +133,12 @@ llama_model_plm::graph::graph(const llama_model & model, const llm_graph_params 
                     0);
             cb(v_states, "v_states", il);
 
-            q = ggml_rope_ext(
-                    ctx0, q, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            q = build_rope(q, inp_pos, nullptr, n_rot);
             q = ggml_rope_set_offset(q, n_embd_head_qk_nope);
             cb(q, "q_rope", il);
 
             // shared RoPE key
-            k_pe = ggml_rope_ext(
-                    ctx0, k_pe, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
             cb(k_pe, "k_pe", il);
 
             ggml_tensor * q_states = q;
@@ -197,10 +189,7 @@ llama_model_plm::graph::graph(const llama_model & model, const llm_graph_params 
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur, model.output_s);
-
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, model.output_s);
 
     ggml_build_forward_expand(gf, cur);
 }

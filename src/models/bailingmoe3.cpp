@@ -337,10 +337,8 @@ llama_model_bailingmoe3::graph::graph(const llama_model & model, const llm_graph
                 k_pe = ggml_rope_multi(ctx0, k_pe, inp_pos, nullptr, n_rot, sections, rope_type,
                         n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
             } else {
-                q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow);
-                k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow);
+                q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
+                k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
             }
             kv = build_norm(kv, layer.attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
 
@@ -504,10 +502,8 @@ llama_model_bailingmoe3::graph_mtp::graph_mtp(const llama_model & model, const l
         k_pe = ggml_rope_multi(ctx0, k_pe, inp_pos, nullptr, n_rot, sections, rope_type,
                 n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
     } else {
-        q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
-        k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
+        q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
+        k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
     }
     kv = build_norm(kv, layer.attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
 

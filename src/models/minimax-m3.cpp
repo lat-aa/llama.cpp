@@ -318,14 +318,8 @@ llama_model_minimax_m3::graph::graph(const llama_model & model, const llm_graph_
             cb(Kcur, "Kcur_normed", il);
 
             // partial rotary: only the first n_rot dims are rotated
-            Qcur = ggml_rope_ext(
-                ctx0, Qcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
-            Kcur = ggml_rope_ext(
-                ctx0, Kcur, inp_pos, nullptr,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow);
+            Qcur = build_rope(Qcur, inp_pos, nullptr, n_rot);
+            Kcur = build_rope(Kcur, inp_pos, nullptr, n_rot);
 
             cb(Qcur, "Qcur", il);
             cb(Kcur, "Kcur", il);
@@ -347,10 +341,8 @@ llama_model_minimax_m3::graph::graph(const llama_model & model, const llm_graph_
                 ik = ggml_reshape_3d(ctx0, ik, n_idx_dim, 1,  n_tokens);
                 iq = build_norm(iq, model.layers[il].index_q_norm, NULL, LLM_NORM_RMS, il);  // +1 baked
                 ik = build_norm(ik, model.layers[il].index_k_norm, NULL, LLM_NORM_RMS, il);
-                iq = ggml_rope_ext(ctx0, iq, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
-                                   freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
-                ik = ggml_rope_ext(ctx0, ik, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
-                                   freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                iq = build_rope(iq, inp_pos, nullptr, n_rot);
+                ik = build_rope(ik, inp_pos, nullptr, n_rot);
 
                 const auto * mctx_msa_l = static_cast<const llama_kv_cache_msa_context *>(mctx);
                 const auto * mctx_cur = mctx_msa_l->get_base();
@@ -599,10 +591,7 @@ llama_model_minimax_m3::graph::graph(const llama_model & model, const llm_graph_
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    // lm_head
-    cur = build_lora_mm(model.output, cur, model.output_s);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, model.output_s);
 
     ggml_build_forward_expand(gf, cur);
 }

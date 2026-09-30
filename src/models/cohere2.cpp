@@ -87,17 +87,9 @@ llama_model_cohere2::graph::graph(const llama_model & model, const llm_graph_par
                     n_embd_head, n_head, n_head_kv, il);
 
             if (is_swa) {
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
+                Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
 
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
+                Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
             }
 
             cb(Qcur, "Qcur", il);

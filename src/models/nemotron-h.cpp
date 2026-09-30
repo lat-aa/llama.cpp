@@ -68,12 +68,7 @@ void llama_model_nemotron_h::load_arch_tensors(llama_model_loader & ml) {
 
     // output
     {
-        output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
-        output = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
-        // if output is NULL, init from the input tok embed, duplicated to allow offloading
-        if (output == NULL) {
-            output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
-        }
+        create_tensor_output(n_embd, n_vocab);
     }
 
     for (int i = 0; i < n_layer; ++i) {
@@ -255,10 +250,7 @@ llama_model_nemotron_h::graph::graph(const llama_model & model, const llm_graph_
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    // lm_head
-    cur = build_lora_mm(model.output, cur, model.output_s);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, model.output_s);
 
     ggml_build_forward_expand(gf, cur);
 }

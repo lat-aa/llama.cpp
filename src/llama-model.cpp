@@ -3375,6 +3375,16 @@ void llama_model_base::create_tensor_qkv(llama_layer & layer, int bid,
     }
 }
 
+void llama_model_base::create_tensor_output(int64_t n_embd_, int64_t n_vocab_) {
+    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd_}, 0);
+    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd_, n_vocab_}, TENSOR_NOT_REQUIRED);
+
+    // if output is NULL, init from the input tok embed
+    if (output == NULL) {
+        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd_, n_vocab_}, TENSOR_DUPLICATED);
+    }
+}
+
 void llama_model_base::load_swa_pattern(llama_model_loader & ml, uint32_t n_pattern, bool dense_first) {
     if (ml.get_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.is_swa_impl, false)) {
         return;

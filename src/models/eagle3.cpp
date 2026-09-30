@@ -238,16 +238,8 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
         // RoPE
-        Qcur = ggml_rope_ext(
-                ctx0, Qcur, inp_pos, rope_factors,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow
-                );
-        Kcur = ggml_rope_ext(
-                ctx0, Kcur, inp_pos, rope_factors,
-                n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                ext_factor, attn_factor, beta_fast, beta_slow
-                );
+        Qcur = build_rope(Qcur, inp_pos, rope_factors, n_rot);
+        Kcur = build_rope(Kcur, inp_pos, rope_factors, n_rot);
 
         cb(Qcur, "Qcur_rope", il);
         cb(Kcur, "Kcur_rope", il);

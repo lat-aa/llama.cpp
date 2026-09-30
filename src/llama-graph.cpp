@@ -1625,6 +1625,17 @@ ggml_tensor * llm_graph_context::build_norm(
 }
 
 
+ggml_tensor * llm_graph_context::build_rope(
+         ggml_tensor * cur,
+         ggml_tensor * pos,
+         ggml_tensor * factors,
+                 int   n_dims) const {
+    return ggml_rope_ext(ctx0, cur, pos, factors,
+            n_dims, rope_type, n_ctx_orig, freq_base, freq_scale,
+            ext_factor, attn_factor, beta_fast, beta_slow);
+}
+
+
 llm_graph_qkv llm_graph_context::build_qkv(
         const llama_layer & layer,
               ggml_tensor * cur,
@@ -3680,6 +3691,19 @@ void llm_graph_context::build_dense_out(
     cb(cur, "result_embd_pooled", -1);
     res->t_embd_pooled = cur;
     ggml_build_forward_expand(gf, cur);
+}
+
+
+ggml_tensor * llm_graph_context::build_output_head(
+        ggml_tensor * cur,
+        ggml_tensor * w,
+        ggml_tensor * w_s) const {
+    cur = build_lora_mm(w, cur, w_s);
+
+    cb(cur, "result_output", -1);
+    res->t_logits = cur;
+
+    return cur;
 }
 
 

@@ -70,17 +70,9 @@ llama_model_neo_bert::graph::graph(const llama_model & model, const llm_graph_pa
                     n_embd_head, n_head, n_head_kv, il);
 
             // RoPE
-            Qcur = ggml_rope_ext(
-                    ctx0, Qcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            Qcur = build_rope(Qcur, inp_pos, nullptr, n_rot);
 
-            Kcur = ggml_rope_ext(
-                    ctx0, Kcur, inp_pos, nullptr,
-                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                    ext_factor, attn_factor, beta_fast, beta_slow
-                    );
+            Kcur = build_rope(Kcur, inp_pos, nullptr, n_rot);
 
             cb(Qcur, "Qcur", il);
             cb(Kcur, "Kcur", il);

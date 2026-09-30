@@ -299,11 +299,9 @@ ggml_tensor * llama_model_hy_v4::graph::build_attention(
             ggml_row_size(kv_cmpr_pe->type, kv_lora_rank + n_embd_head_qk_rope),
             ggml_row_size(kv_cmpr_pe->type, kv_lora_rank));
 
-    q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
     cb(q_pe, "q_pe", il);
-    k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
     cb(k_pe, "k_pe", il);
 
     kv_cmpr = build_norm(kv_cmpr, layer.attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
@@ -358,8 +356,7 @@ ggml_tensor * llama_model_hy_v4::graph::build_indexer_top_k(
 
     iq = ggml_reshape_3d(ctx0, iq, n_embd_indexer, n_indexer_head, n_tokens);
 
-    iq = ggml_rope_ext(ctx0, iq, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base,
-         freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    iq = build_rope(iq, inp_pos, nullptr, n_rot);
     iq = ggml_rope_set_offset(iq, n_embd_indexer_nope);
     cb(iq, "indexer_q", il);
 
@@ -369,8 +366,7 @@ ggml_tensor * llama_model_hy_v4::graph::build_indexer_top_k(
 
     ik = ggml_reshape_3d(ctx0, ik, n_embd_indexer, 1, n_tokens);
 
-    ik = ggml_rope_ext(ctx0, ik, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base,
-         freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    ik = build_rope(ik, inp_pos, nullptr, n_rot);
     ik = ggml_rope_set_offset(ik, n_embd_indexer_nope);
     cb(ik, "indexer_k", il);
 
@@ -458,11 +454,9 @@ ggml_tensor * llama_model_hy_v4::graph::build_attention_dsa(
             ggml_row_size(kv_cmpr_pe->type, kv_lora_rank + n_embd_head_qk_rope),
             ggml_row_size(kv_cmpr_pe->type, kv_lora_rank));
 
-    q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    q_pe = build_rope(q_pe, inp_pos, nullptr, n_rot);
     cb(q_pe, "q_pe", il);
-    k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    k_pe = build_rope(k_pe, inp_pos, nullptr, n_rot);
     cb(k_pe, "k_pe", il);
 
     kv_cmpr = build_norm(kv_cmpr, layer.attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);

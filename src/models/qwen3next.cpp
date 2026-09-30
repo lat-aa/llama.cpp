@@ -214,10 +214,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
     res->t_embd = cur;
 
     // LM head
-    cur = build_lora_mm(model.output, cur, model.output_s);
-
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, model.output_s);
 
     ggml_build_forward_expand(gf, cur);
 }
@@ -275,15 +272,9 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_attn(
     Kcur = build_norm(Kcur, model.layers[il].attn_k_norm, nullptr, LLM_NORM_RMS, il);
     cb(Kcur, "Kcur_normed", il);
 
-    Qcur = ggml_rope_ext(
-            ctx0, Qcur, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    Qcur = build_rope(Qcur, inp_pos, nullptr, n_rot);
 
-    Kcur = ggml_rope_ext(
-            ctx0, Kcur, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base,
-            freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+    Kcur = build_rope(Kcur, inp_pos, nullptr, n_rot);
 
     cb(Qcur, "Qcur", il);
     cb(Kcur, "Kcur", il);
@@ -713,12 +704,8 @@ llama_model_qwen3next::graph_mtp::graph_mtp(const llama_model & model, const llm
 
     Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
-    Qcur = ggml_rope_ext(ctx0, Qcur, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
-    Kcur = ggml_rope_ext(ctx0, Kcur, inp_pos, nullptr,
-            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-            ext_factor, attn_factor, beta_fast, beta_slow);
+    Qcur = build_rope(Qcur, inp_pos, nullptr, n_rot);
+    Kcur = build_rope(Kcur, inp_pos, nullptr, n_rot);
 
     cb(Qcur, "mtp_Qcur", il);
     cb(Kcur, "mtp_Kcur", il);

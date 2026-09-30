@@ -138,9 +138,7 @@ llama_model_spark2_5::graph::graph(const llama_model & model, const llm_graph_pa
     cb(cur, "result_norm", -1);
     res->t_embd = cur;
 
-    cur = build_lora_mm(model.output, cur);
-    cb(cur, "result_output", -1);
-    res->t_logits = cur;
+    cur = build_output_head(cur, model.output, nullptr);
 
     ggml_build_forward_expand(gf, cur);
 }
