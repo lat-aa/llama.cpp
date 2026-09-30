@@ -79,7 +79,14 @@ static __global__ void flash_attn_ext_vec(
 #endif // RDNA
     constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
 #else
-    constexpr int nthreads_KQ_q = (D/4 < 32 ? D/4 : 32);
+    // At D=128 the default (D/4 capped at 32) makes nthreads_KQ == WARP_SIZE, so a warp
+    // walks one KV row at a time and pays a full warp reduction per row. A smaller split
+    // lets a warp cover several rows at once; measured faster for 4/5-bit KV on sm_89.
+    // q8_0 is left at the default, which measured fastest for it.
+    constexpr int nthreads_KQ_q = D != 128 ? (D/4 < 32 ? D/4 : 32) :
+        type_K == GGML_TYPE_Q5_1 ? 2 :
+        type_K == GGML_TYPE_Q8_0 ? 32 :
+                                   4;
     constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
 #endif // GGML_USE_HIP
 
