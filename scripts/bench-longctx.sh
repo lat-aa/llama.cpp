@@ -26,8 +26,10 @@ NG=128
 REPS=3
 DEV=0
 DO_PPL=0
+PPL_ONLY=0
 CORPUS=${CORPUS:-wikitext-2-raw/wiki.test.raw}
-PPL_CTX=512
+PPL_CTX=${PPL_CTX:-512}
+PPL_CHUNKS=${PPL_CHUNKS:-0}
 NGL=999
 
 usage() {
@@ -43,6 +45,7 @@ while (( $# )); do
         -r) REPS=$2; shift 2 ;;
         -dev) DEV=$2; shift 2 ;;
         --ppl) DO_PPL=1; shift ;;
+        --ppl-only) DO_PPL=1; PPL_ONLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 1 ;;
     esac
@@ -58,6 +61,15 @@ printf "kv\tctx\tprefill_tps\tdecode_tps\tpeak_mib\tstatus\n" > "$RES"
 # median of the numbers on stdin
 median() {
     sort -n | awk '{a[NR]=$1} END{ if (NR==0) print "NA"; else if (NR%2) printf "%.2f", a[(NR+1)/2]; else printf "%.2f", (a[NR/2]+a[NR/2+1])/2 }'
+}
+
+# kv spec is "TYPE" (same for K and V) or "TYPE_K,TYPE_V"
+kv_tag() { echo "$1" | tr ',' '-'; }
+kv_parse() {
+    case "$1" in
+        *,*) echo "${1%%,*} ${1##*,}" ;;
+        *)   echo "$1 $1" ;;
+    esac
 }
 
 # print avg_ts of every llama-bench record whose n_gen equals $2
@@ -97,9 +109,11 @@ stop_mem_sampler() {
 
 run_bench() {
     local kv=$1 ctx=$2
-    local tag="kv${kv}_d${ctx}"
+    local tag="kv$(kv_tag "$kv")_d${ctx}"
     local jsonl="$OUT/$tag.jsonl"
     local log="$OUT/$tag.log"
+    local kv_k kv_v
+    read -r kv_k kv_v <<< "$(kv_parse "$kv")"
 
     : > "$jsonl"
     local mem="$OUT/$tag.mem"; : > "$mem"
@@ -109,7 +123,7 @@ run_bench() {
     for (( i = 1; i <= REPS; i++ )); do
         "$BIN/llama-bench" \
             -m "$MODEL" -p "$NP" -n "$NG" -d "$ctx" \
-            -ctk "$kv" -ctv "$kv" -fa on \
+            -ctk "$kv_k" -ctv "$kv_v" -fa on \
             -ngl "$NGL" -r 1 -o jsonl \
             >> "$jsonl" 2>> "$log" || { rc=$?; break; }
     done
@@ -133,21 +147,25 @@ run_bench() {
 
 run_ppl() {
     local kv=$1
-    local log="$OUT/ppl_kv${kv}.log"
-    local out="$OUT/ppl_kv${kv}.txt"
+    local tag="kv$(kv_tag "$kv")"
+    local log="$OUT/ppl_${tag}.log"
+    local out="$OUT/ppl_${tag}.txt"
+    local kv_k kv_v
+    read -r kv_k kv_v <<< "$(kv_parse "$kv")"
 
     if [ ! -f "$CORPUS" ]; then
         echo "  ppl skipped: $CORPUS not found (run scripts/get-wikitext-2.sh)" >&2
         return
     fi
 
-    local mem="$OUT/ppl_kv${kv}.mem"; : > "$mem"
+    local mem="$OUT/ppl_${tag}.mem"; : > "$mem"
     local sampler; sampler=$(start_mem_sampler "$mem")
 
     local rc=0
     "$BIN/llama-perplexity" \
         -m "$MODEL" -f "$CORPUS" -c "$PPL_CTX" \
-        -ctk "$kv" -ctv "$kv" -fa on -ngl "$NGL" \
+        $( (( PPL_CHUNKS > 0 )) && echo "--chunks $PPL_CHUNKS" ) \
+        -ctk "$kv_k" -ctv "$kv_v" -fa on -ngl "$NGL" \
         > "$out" 2> "$log" || rc=$?
 
     stop_mem_sampler "$sampler"
@@ -158,7 +176,8 @@ run_ppl() {
     fi
 
     local ppl peak
-    ppl=$(grep -oE 'Final estimate: PPL = [0-9.]+' "$out" | tail -1 | awk '{print $5}')
+    # the "Final estimate" line is logged to stderr
+    ppl=$(grep -oE 'Final estimate: PPL = [0-9.]+' "$log" | tail -1 | awk '{print $5}')
     peak=$(sort -n "$mem" | tail -1)
     printf "%s\t%s\t%s\n" "$kv" "${ppl:-NA}" "$peak" >> "$OUT/ppl.tsv"
     echo "  ppl kv=$kv -> ${ppl:-NA} (peak ${peak}MiB)"
@@ -170,6 +189,7 @@ echo "kv:    $KVTS"
 echo
 
 for kv in $KVTS; do
+    (( PPL_ONLY )) && break
     for ctx in $CTXS; do
         run_bench "$kv" "$ctx"
     done
